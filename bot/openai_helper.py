@@ -26,8 +26,19 @@ GPT_4_32K_MODELS = ("gpt-4-32k", "gpt-4-32k-0314", "gpt-4-32k-0613")
 GPT_4_VISION_MODELS = ("gpt-4o",)
 GPT_4_128K_MODELS = ("gpt-4-1106-preview", "gpt-4-0125-preview", "gpt-4-turbo-preview", "gpt-4-turbo", "gpt-4-turbo-2024-04-09")
 GPT_4O_MODELS = ("gpt-4o", "gpt-4o-mini", "chatgpt-4o-latest")
+GPT_5_MODELS = ("gpt-5", "chatgpt-5-latest")
 O_MODELS = ("o1", "o1-mini", "o1-preview")
-GPT_ALL_MODELS = GPT_3_MODELS + GPT_3_16K_MODELS + GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O_MODELS
+GPT_ALL_MODELS = (
+    GPT_3_MODELS
+    + GPT_3_16K_MODELS
+    + GPT_4_MODELS
+    + GPT_4_32K_MODELS
+    + GPT_4_VISION_MODELS
+    + GPT_4_128K_MODELS
+    + GPT_4O_MODELS
+    + GPT_5_MODELS
+    + O_MODELS
+)
 
 def default_max_tokens(model: str) -> int:
     """
@@ -51,6 +62,8 @@ def default_max_tokens(model: str) -> int:
     elif model in GPT_4_128K_MODELS:
         return 4096
     elif model in GPT_4O_MODELS:
+        return 4096
+    elif model in GPT_5_MODELS:
         return 4096
     elif model in O_MODELS:
         return 4096
@@ -632,6 +645,8 @@ class OpenAIHelper:
             return base * 31
         if self.config['model'] in GPT_4O_MODELS:
             return base * 31
+        if self.config['model'] in GPT_5_MODELS:
+            return float('inf')
         elif self.config['model'] in O_MODELS:
             # https://platform.openai.com/docs/models#o1
             if self.config['model'] == "o1":
