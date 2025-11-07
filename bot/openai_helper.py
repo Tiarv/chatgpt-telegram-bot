@@ -1,4 +1,3 @@
-from __future__ import annotations
 import datetime
 import logging
 import os
@@ -14,6 +13,8 @@ from PIL import Image
 
 from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 
+from typing import Optional
+
 from utils import is_direct_result, encode_image, decode_image
 from plugin_manager import PluginManager
 
@@ -26,8 +27,20 @@ GPT_4_32K_MODELS = ("gpt-4-32k", "gpt-4-32k-0314", "gpt-4-32k-0613")
 GPT_4_VISION_MODELS = ("gpt-4o",)
 GPT_4_128K_MODELS = ("gpt-4-1106-preview", "gpt-4-0125-preview", "gpt-4-turbo-preview", "gpt-4-turbo", "gpt-4-turbo-2024-04-09")
 GPT_4O_MODELS = ("gpt-4o", "gpt-4o-mini", "chatgpt-4o-latest")
+GPT_5_MODELS = ("gpt-5",)
 O_MODELS = ("o1", "o1-mini", "o1-preview")
-GPT_ALL_MODELS = GPT_3_MODELS + GPT_3_16K_MODELS + GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O_MODELS
+GPT_ALL_MODELS = (
+    GPT_3_MODELS
+    + GPT_3_16K_MODELS
+    + GPT_4_MODELS
+    + GPT_4_32K_MODELS
+    + GPT_4_VISION_MODELS
+    + GPT_4_128K_MODELS
+    + GPT_4O_MODELS
+    + GPT_5_MODELS
+    + O_MODELS
+)
+
 
 def default_max_tokens(model: str) -> int:
     """
@@ -51,6 +64,8 @@ def default_max_tokens(model: str) -> int:
     elif model in GPT_4_128K_MODELS:
         return 4096
     elif model in GPT_4O_MODELS:
+        return 4096
+    elif model in GPT_5_MODELS:
         return 4096
     elif model in O_MODELS:
         return 4096
@@ -247,18 +262,58 @@ class OpenAIHelper:
                 'messages': self.conversations[chat_id],
                 'temperature': self.config['temperature'],
                 'n': self.config['n_choices'],
-                max_tokens_str: self.config['max_tokens'],
                 'presence_penalty': self.config['presence_penalty'],
                 'frequency_penalty': self.config['frequency_penalty'],
                 'stream': stream
             }
+
+            max_tokens_param = self._token_param_for_model(self.config['model'])
+            if max_tokens_param:
+                common_args[max_tokens_param] = self.config['max_tokens']
 
             if self.config['enable_functions'] and not self.conversations_vision[chat_id]:
                 functions = self.plugin_manager.get_functions_specs()
                 if len(functions) > 0:
                     common_args['functions'] = self.plugin_manager.get_functions_specs()
                     common_args['function_call'] = 'auto'
-            return await self.client.chat.completions.create(**common_args)
+            try:
+                return await self.client.chat.completions.create(**common_args)
+            except openai.NotFoundError as e:
+                fallback_model = self.config.get('fallback_model')
+                is_primary_gpt5 = self.config['model'] in GPT_5_MODELS
+                if not is_primary_gpt5 or not fallback_model or fallback_model == self.config['model']:
+                    raise Exception(
+                        f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{str(e)}"
+                    ) from e
+
+                logging.warning(
+                    "Model %s is unavailable. Falling back to %s.",
+                    self.config['model'],
+                    fallback_model
+                )
+
+                self.config['model'] = fallback_model
+                self.config['enable_functions'] = (
+                    self.config['enable_functions']
+                    and are_functions_available(fallback_model)
+                )
+
+                fallback_default_max = default_max_tokens(fallback_model)
+                if self.config['max_tokens'] > fallback_default_max:
+                    self.config['max_tokens'] = fallback_default_max
+
+                common_args['model'] = (
+                    fallback_model
+                    if not self.conversations_vision[chat_id]
+                    else self.config['vision_model']
+                )
+                common_args.pop('max_tokens', None)
+                common_args.pop('max_completion_tokens', None)
+
+                max_tokens_param = self._token_param_for_model(fallback_model)
+                if max_tokens_param:
+                    common_args[max_tokens_param] = self.config['max_tokens']
+                return await self.client.chat.completions.create(**common_args)
 
         except openai.RateLimitError as e:
             raise e
@@ -269,6 +324,14 @@ class OpenAIHelper:
         except Exception as e:
             raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{str(e)}") from e
 
+    @staticmethod
+    def _token_param_for_model(model: str) -> Optional[str]:
+        if model in O_MODELS:
+            return 'max_completion_tokens'
+        if model in GPT_5_MODELS:
+            return None
+        return 'max_tokens'
+        
     async def __handle_function_call(self, chat_id, response, stream=False, times=0, plugins_used=()):
         function_name = ''
         arguments = ''
@@ -632,6 +695,8 @@ class OpenAIHelper:
             return base * 31
         if self.config['model'] in GPT_4O_MODELS:
             return base * 31
+        if self.config['model'] in GPT_5_MODELS:
+            return float('inf')
         elif self.config['model'] in O_MODELS:
             # https://platform.openai.com/docs/models#o1
             if self.config['model'] == "o1":
